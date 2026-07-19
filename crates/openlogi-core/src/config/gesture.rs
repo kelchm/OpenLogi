@@ -431,6 +431,114 @@ pub fn main_default_gesture_map() -> BTreeMap<GestureDirection, Action> {
         .collect()
 }
 
+/// Named gesture direction pack, or free-form Custom (K5).
+///
+/// The five-direction map is always the dispatch source of truth. A named
+/// preset tag means the stored map exactly matches that preset's table (or was
+/// just applied from it). Editing any direction forces [`Custom`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum GesturePreset {
+    /// Desktop / Spaces navigation pack (not 1:1 with main defaults).
+    WindowNavigation,
+    /// Media transport + volume pack.
+    MediaControls,
+    /// Free-form map (migration default for main five-pack and any non-match).
+    #[default]
+    Custom,
+}
+
+impl GesturePreset {
+    /// UI-facing English label (source key for i18n).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            GesturePreset::WindowNavigation => "Window navigation",
+            GesturePreset::MediaControls => "Media controls",
+            GesturePreset::Custom => "Custom",
+        }
+    }
+
+    /// Every selectable preset in dropdown order.
+    pub const ALL: [GesturePreset; 3] = [
+        GesturePreset::WindowNavigation,
+        GesturePreset::MediaControls,
+        GesturePreset::Custom,
+    ];
+}
+
+impl fmt::Display for GesturePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Window navigation preset table (K5).
+#[must_use]
+pub fn window_navigation_map() -> BTreeMap<GestureDirection, Action> {
+    BTreeMap::from([
+        (GestureDirection::Left, Action::PreviousDesktop),
+        (GestureDirection::Right, Action::NextDesktop),
+        (GestureDirection::Up, Action::MissionControl),
+        (GestureDirection::Down, Action::AppExpose),
+        (GestureDirection::Click, Action::MissionControl),
+    ])
+}
+
+/// Media controls preset table (K5).
+#[must_use]
+pub fn media_controls_map() -> BTreeMap<GestureDirection, Action> {
+    BTreeMap::from([
+        (GestureDirection::Left, Action::PrevTrack),
+        (GestureDirection::Right, Action::NextTrack),
+        (GestureDirection::Up, Action::VolumeUp),
+        (GestureDirection::Down, Action::VolumeDown),
+        (GestureDirection::Click, Action::PlayPause),
+    ])
+}
+
+/// Full five-direction map for a named preset. [`GesturePreset::Custom`] has no table.
+#[must_use]
+pub fn preset_table(preset: GesturePreset) -> Option<BTreeMap<GestureDirection, Action>> {
+    match preset {
+        GesturePreset::WindowNavigation => Some(window_navigation_map()),
+        GesturePreset::MediaControls => Some(media_controls_map()),
+        GesturePreset::Custom => None,
+    }
+}
+
+/// Exact table match → named preset; otherwise [`GesturePreset::Custom`] (K5a).
+///
+/// Never rewrites the map — callers only use this to tag.
+#[must_use]
+pub fn match_gesture_preset(map: &BTreeMap<GestureDirection, Action>) -> GesturePreset {
+    if map == &window_navigation_map() {
+        GesturePreset::WindowNavigation
+    } else if map == &media_controls_map() {
+        GesturePreset::MediaControls
+    } else {
+        GesturePreset::Custom
+    }
+}
+
+/// Derive missing preset tags from stored Gesture maps without rewriting maps (K5a).
+///
+/// For every `Binding::Gesture` entry that lacks a tag, insert the match result.
+/// Existing tags are left untouched (including a Custom tag over an exact table).
+pub(super) fn derive_missing_preset_tags(
+    bindings: &BTreeMap<ButtonId, Binding>,
+    presets: &mut BTreeMap<ButtonId, GesturePreset>,
+) {
+    for (id, binding) in bindings {
+        if presets.contains_key(id) {
+            continue;
+        }
+        if let Binding::Gesture(map) = binding {
+            presets.insert(*id, match_gesture_preset(map));
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "expect/unwrap are idiomatic in tests")]
 mod tests {

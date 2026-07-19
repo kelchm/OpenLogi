@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::gesture::{
-    GestureButtons, GestureButtonsField, deserialize_gesture_buttons_field, migrate_live_set,
+    GestureButtons, GestureButtonsField, GesturePreset, derive_missing_preset_tags,
+    deserialize_gesture_buttons_field, migrate_live_set,
 };
 use super::settings::{
     GestureOwner, Lighting, ScrollResolution, SmartShift, deserialize_gesture_owner,
@@ -64,6 +65,11 @@ pub struct DeviceConfig {
     /// Listed first so it serializes ahead of the `bindings` sub-table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture_buttons: Option<GestureButtons>,
+    /// Per-button gesture preset tag (Window navigation / Media / Custom).
+    /// Absent on load is derived from the map (exact table match → named,
+    /// else Custom) without rewriting actions (K5a).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gesture_presets: BTreeMap<ButtonId, GesturePreset>,
     /// Last-known identity (name / kind / capabilities), captured while the
     /// device was online. Lets the UI render this device — with the right
     /// config panels — on a cold start before any probe, or while it sleeps.
@@ -140,6 +146,8 @@ struct RawDeviceConfig {
     #[serde(default, deserialize_with = "deserialize_gesture_owner")]
     gesture_owner: Option<GestureOwner>,
     #[serde(default)]
+    gesture_presets: BTreeMap<ButtonId, GesturePreset>,
+    #[serde(default)]
     identity: Option<DeviceIdentity>,
     /// v2 shape — present on already-migrated files; wins on any key collision.
     #[serde(default)]
@@ -206,8 +214,13 @@ impl From<RawDeviceConfig> for DeviceConfig {
             &mut bindings,
         ));
 
+        // Derive missing preset tags from maps; never rewrite maps (K5a).
+        let mut gesture_presets = raw.gesture_presets;
+        derive_missing_preset_tags(&bindings, &mut gesture_presets);
+
         DeviceConfig {
             gesture_buttons,
+            gesture_presets,
             identity: raw.identity,
             bindings,
             per_app_bindings: raw.per_app_bindings,

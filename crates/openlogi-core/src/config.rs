@@ -22,8 +22,9 @@ mod settings;
 
 pub use device::{DeviceConfig, DeviceIdentity};
 pub use gesture::{
-    EXPERIMENTAL_GESTURE_MARKERS, GestureButtonState, GestureButtons, is_gesture_eligible,
-    main_default_gesture_map,
+    EXPERIMENTAL_GESTURE_MARKERS, GestureButtonState, GestureButtons, GesturePreset,
+    is_gesture_eligible, main_default_gesture_map, match_gesture_preset, media_controls_map,
+    preset_table, window_navigation_map,
 };
 pub use settings::{
     AppSettings, Appearance, AssetSourcePreference, DEFAULT_THUMBWHEEL_SENSITIVITY, GestureOwner,
@@ -262,12 +263,20 @@ impl Config {
     /// entry if needed. Replaces the whole binding (use
     /// [`Self::set_gesture_direction`] to edit one direction of a gesture
     /// binding in place).
+    ///
+    /// A non-gesture binding destroys the preset tag (K13) and drops the button
+    /// from the live multi-set when present (non-destructive maps are only kept
+    /// for demoted `Binding::Gesture` entries).
     pub fn set_binding(&mut self, device_key: &str, button: ButtonId, binding: Binding) {
-        self.devices
-            .entry(device_key.to_string())
-            .or_default()
-            .bindings
-            .insert(button, binding);
+        let device = self.devices.entry(device_key.to_string()).or_default();
+        let is_gesture = binding.is_gesture();
+        device.bindings.insert(button, binding);
+        if !is_gesture {
+            device.gesture_presets.remove(&button);
+            if let Some(live) = device.gesture_buttons.take() {
+                device.gesture_buttons = Some(live.remove(button));
+            }
+        }
     }
 
     /// Returns the gesture sub-bindings for `device_key`'s gesture button, or an
@@ -305,6 +314,12 @@ impl Config {
         if let Binding::Gesture(map) = self.ensure_gesture_binding(device_key, button) {
             map.insert(direction, action);
         }
+        // Editing any direction while a named preset is selected → Custom (K5).
+        self.devices
+            .entry(device_key.to_string())
+            .or_default()
+            .gesture_presets
+            .insert(button, GesturePreset::Custom);
     }
 
     /// Ensure `button` on `device_key` is a [`Binding::Gesture`], creating the
@@ -388,7 +403,19 @@ impl Config {
         };
         let device = self.devices.entry(device_key.to_string()).or_default();
         for id in next.iter() {
+            let had_gesture = matches!(device.bindings.get(&id), Some(Binding::Gesture(_)));
             ensure_gesture_map_for_enable(&mut device.bindings, id);
+            if had_gesture {
+                // Keep a stored/derived named tag over an existing map.
+                device
+                    .gesture_presets
+                    .entry(id)
+                    .or_insert(GesturePreset::Custom);
+            } else {
+                // Newly materialised or upgraded from Single → Custom (K5b).
+                // Must overwrite a stale named tag left after a Single rebind.
+                device.gesture_presets.insert(id, GesturePreset::Custom);
+            }
         }
         device.gesture_buttons = Some(next);
     }
@@ -414,9 +441,64 @@ impl Config {
         let desired = GestureButtons::try_from_iter(buttons);
         let device = self.devices.entry(device_key.to_string()).or_default();
         for id in desired.iter() {
+            let had_gesture = matches!(device.bindings.get(&id), Some(Binding::Gesture(_)));
             ensure_gesture_map_for_enable(&mut device.bindings, id);
+            if had_gesture {
+                device
+                    .gesture_presets
+                    .entry(id)
+                    .or_insert(GesturePreset::Custom);
+            } else {
+                device.gesture_presets.insert(id, GesturePreset::Custom);
+            }
         }
         device.gesture_buttons = Some(desired);
+    }
+
+    /// Preset tag for `button` on `device_key` (K5 / K5a).
+    ///
+    /// Stored tag wins; otherwise derive from the Gesture map (exact table →
+    /// named, else Custom). Non-gesture / absent → Custom.
+    #[must_use]
+    pub fn gesture_preset(&self, device_key: &str, button: ButtonId) -> GesturePreset {
+        if let Some(tag) = self
+            .devices
+            .get(device_key)
+            .and_then(|d| d.gesture_presets.get(&button))
+            .copied()
+        {
+            return tag;
+        }
+        match self
+            .devices
+            .get(device_key)
+            .and_then(|d| d.bindings.get(&button))
+        {
+            Some(Binding::Gesture(map)) => match_gesture_preset(map),
+            _ => GesturePreset::Custom,
+        }
+    }
+
+    /// Apply a preset selection (K5).
+    ///
+    /// * Named preset → replace the full five-map from the table and set the tag.
+    /// * Custom → set the tag only (map is not wiped).
+    ///
+    /// Does not change live-set membership; pair with [`Self::enable_gesture_button`]
+    /// when first enabling a button.
+    pub fn set_gesture_preset(
+        &mut self,
+        device_key: &str,
+        button: ButtonId,
+        preset: GesturePreset,
+    ) {
+        let device = self.devices.entry(device_key.to_string()).or_default();
+        if let Some(table) = preset_table(preset) {
+            device.bindings.insert(button, Binding::Gesture(table));
+        }
+        // Custom with no prior Gesture map: leave bindings alone (caller may
+        // enable first). Tag is always written.
+        device.gesture_presets.insert(button, preset);
     }
 
     /// Compat sole-owner view of the multi-set (K14).
@@ -1815,6 +1897,234 @@ gesture_buttons = "not-a-button"
                 assert_eq!(map.get(&GestureDirection::Up), Some(&Action::VolumeUp));
             }
             other => panic!("expected preserved NotLive map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn main_default_map_is_custom_not_window_navigation() {
+        // K5a fact: main pack ≠ Window navigation 1:1.
+        assert_ne!(
+            main_default_gesture_map(),
+            window_navigation_map(),
+            "main defaults must not equal Window navigation"
+        );
+        assert_eq!(
+            match_gesture_preset(&main_default_gesture_map()),
+            GesturePreset::Custom
+        );
+        assert_eq!(
+            match_gesture_preset(&window_navigation_map()),
+            GesturePreset::WindowNavigation
+        );
+        assert_eq!(
+            match_gesture_preset(&media_controls_map()),
+            GesturePreset::MediaControls
+        );
+    }
+
+    #[test]
+    fn migration_main_map_stays_custom_actions_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        // v3 owner=GB with main-pack directions (what OpenLogi ships today).
+        fs::write(
+            &path,
+            r#"
+schema_version = 3
+[devices.d]
+gesture_owner = "GestureButton"
+[devices.d.bindings.GestureButton]
+Up = "MissionControl"
+Down = "ShowDesktop"
+Left = "PrevTab"
+Right = "NextTab"
+Click = "AppExpose"
+"#,
+        )
+        .expect("write");
+        let cfg = Config::load_from_path(&path).expect("load");
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::GestureButton) {
+            Some(Binding::Gesture(map)) => {
+                assert_eq!(map, &main_default_gesture_map());
+            }
+            other => panic!("expected main map preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_named_preset_replaces_map_edit_forces_custom() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("d", ButtonId::GestureButton);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::Custom
+        );
+
+        cfg.set_gesture_preset("d", ButtonId::GestureButton, GesturePreset::MediaControls);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::MediaControls
+        );
+        match cfg.bindings_for("d").get(&ButtonId::GestureButton) {
+            Some(Binding::Gesture(map)) => assert_eq!(map, &media_controls_map()),
+            other => panic!("expected media table, got {other:?}"),
+        }
+
+        cfg.set_gesture_direction(
+            "d",
+            ButtonId::GestureButton,
+            GestureDirection::Up,
+            Action::Copy,
+        );
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::GestureButton) {
+            Some(Binding::Gesture(map)) => {
+                assert_eq!(map.get(&GestureDirection::Up), Some(&Action::Copy));
+                assert_eq!(
+                    map.get(&GestureDirection::Click),
+                    Some(&Action::PlayPause),
+                    "other dirs keep the media pack"
+                );
+            }
+            other => panic!("expected edited map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_custom_does_not_wipe_map() {
+        let mut cfg = Config::default();
+        cfg.set_gesture_preset("d", ButtonId::DpiToggle, GesturePreset::MediaControls);
+        cfg.set_gesture_preset("d", ButtonId::DpiToggle, GesturePreset::Custom);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::DpiToggle) {
+            Some(Binding::Gesture(map)) => assert_eq!(map, &media_controls_map()),
+            other => panic!("Custom must not wipe map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vacant_dpi_enable_is_custom_all_none() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("d", ButtonId::DpiToggle);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::DpiToggle) {
+            Some(Binding::Gesture(map)) => {
+                for dir in GestureDirection::ALL {
+                    assert_eq!(map.get(&dir), Some(&Action::None));
+                }
+            }
+            other => panic!("expected all-None map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vacant_gb_enable_is_custom_main_pack() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("d", ButtonId::GestureButton);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::GestureButton) {
+            Some(Binding::Gesture(map)) => assert_eq!(map, &main_default_gesture_map()),
+            other => panic!("expected main pack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_media_map_on_load_tags_media() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+schema_version = 4
+[devices.d]
+gesture_buttons = ["DpiToggle"]
+[devices.d.bindings.DpiToggle]
+Left = "PrevTrack"
+Right = "NextTrack"
+Up = "VolumeUp"
+Down = "VolumeDown"
+Click = "PlayPause"
+"#,
+        )
+        .expect("write");
+        let cfg = Config::load_from_path(&path).expect("load");
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::MediaControls
+        );
+    }
+
+    #[test]
+    fn apply_window_navigation_writes_desktop_pack() {
+        let mut cfg = Config::default();
+        cfg.set_gesture_preset(
+            "d",
+            ButtonId::GestureButton,
+            GesturePreset::WindowNavigation,
+        );
+        match cfg.bindings_for("d").get(&ButtonId::GestureButton) {
+            Some(Binding::Gesture(map)) => assert_eq!(map, &window_navigation_map()),
+            other => panic!("expected window nav table, got {other:?}"),
+        }
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::GestureButton),
+            GesturePreset::WindowNavigation
+        );
+    }
+
+    #[test]
+    fn re_enable_after_single_rebind_resets_stale_preset_tag() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("d", ButtonId::DpiToggle);
+        cfg.set_gesture_preset("d", ButtonId::DpiToggle, GesturePreset::MediaControls);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::MediaControls
+        );
+
+        // Single rebind destroys map + preset and drops from live set (K13).
+        cfg.set_binding(
+            "d",
+            ButtonId::DpiToggle,
+            Binding::Single(Action::CycleDpiPresets),
+        );
+        assert!(!cfg.gesture_buttons("d").contains(ButtonId::DpiToggle));
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::Custom
+        );
+
+        // Re-promote → Custom click-only map, not a stale MediaControls tag.
+        cfg.enable_gesture_button("d", ButtonId::DpiToggle);
+        assert_eq!(
+            cfg.gesture_preset("d", ButtonId::DpiToggle),
+            GesturePreset::Custom
+        );
+        match cfg.bindings_for("d").get(&ButtonId::DpiToggle) {
+            Some(Binding::Gesture(map)) => {
+                assert_eq!(
+                    map.get(&GestureDirection::Click),
+                    Some(&Action::CycleDpiPresets)
+                );
+                assert_eq!(map.get(&GestureDirection::Up), Some(&Action::None));
+            }
+            other => panic!("expected upgraded gesture map, got {other:?}"),
         }
     }
 }
