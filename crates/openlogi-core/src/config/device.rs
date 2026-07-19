@@ -1,11 +1,14 @@
 //! Per-device config: [`DeviceIdentity`], [`DeviceConfig`], and the
 //! [`RawDeviceConfig`] migration shim that folds pre-v2 files into the
-//! unified `bindings` map.
+//! unified `bindings` map and stamps the schema-v4 gesture multi-set.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::gesture::{
+    GestureButtons, GestureButtonsField, deserialize_gesture_buttons_field, migrate_live_set,
+};
 use super::settings::{
     GestureOwner, Lighting, ScrollResolution, SmartShift, deserialize_gesture_owner,
 };
@@ -49,28 +52,26 @@ pub struct DeviceIdentity {
 ///
 /// Deserialization goes through `RawDeviceConfig` (`#[serde(from)]`) so
 /// pre-v2 files — which split bindings across `button_bindings` +
-/// `gesture_bindings` — fold into the unified [`Self::bindings`] map. Only
-/// `bindings` is ever serialized, so a migrated file self-heals to the v2 shape
-/// on its next save.
+/// `gesture_bindings` — fold into the unified [`Self::bindings`] map, and so
+/// legacy `gesture_owner` / absent multi-set fields migrate into
+/// [`Self::gesture_buttons`]. Only the unified shape is ever serialized.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(from = "RawDeviceConfig")]
 pub struct DeviceConfig {
-    /// Which button owns the device's single gesture role, once the user has
-    /// chosen explicitly. Absent means "infer" (the dedicated HID++ gesture
-    /// button owns gestures if present) — see
-    /// [`Config::gesture_owner`](crate::config::Config::gesture_owner). Listed
-    /// first so it serializes as a scalar ahead of the `bindings` sub-table.
+    /// Live multi-set of gesture buttons for this device (`Off` or a non-empty
+    /// eligible set). `None` means "not stamped yet" — readers resolve via the
+    /// infer path until an enable/disable/load stamps a concrete value.
+    /// Listed first so it serializes ahead of the `bindings` sub-table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gesture_owner: Option<GestureOwner>,
+    pub gesture_buttons: Option<GestureButtons>,
     /// Last-known identity (name / kind / capabilities), captured while the
     /// device was online. Lets the UI render this device — with the right
     /// config panels — on a cold start before any probe, or while it sleeps.
     /// `None` for configs written before this field existed or by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<DeviceIdentity>,
-    /// Every rebindable button's binding: a single [`Action`], or — for the
-    /// gesture button (and, later, any raw-XY-capable button) — a
-    /// [`Binding::Gesture`] per-direction map.
+    /// Every rebindable button's binding: a single [`Action`], or — for a
+    /// gesture-mode button — a [`Binding::Gesture`] per-direction map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bindings: BTreeMap<ButtonId, Binding>,
     /// Per-application binding overlays (P1.4). Keyed by bundle identifier
@@ -126,16 +127,16 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Deserialize-only shim that folds the pre-v2 `button_bindings` +
-/// `gesture_bindings` fields into [`DeviceConfig::bindings`]. Never serialized
-/// (only [`DeviceConfig`] is), so reading a legacy file and saving rewrites it
-/// in the v2 shape.
+/// `gesture_bindings` fields into [`DeviceConfig::bindings`] and runs the
+/// schema-v4 live-set migration. Never serialized (only [`DeviceConfig`] is),
+/// so reading a legacy file and saving rewrites it in the current shape.
 #[derive(Deserialize)]
 struct RawDeviceConfig {
-    /// Explicit gesture owner (v2.1+). Absent on older configs → `None` → the
-    /// owner is inferred in
-    /// [`Config::gesture_owner`](crate::config::Config::gesture_owner). A
-    /// present-but-invalid value is tolerated as `None` (infer), not a parse
-    /// error — see [`deserialize_gesture_owner`].
+    /// Explicit multi-set (v4+). Absent → fold `gesture_owner` / infer.
+    #[serde(default, deserialize_with = "deserialize_gesture_buttons_field")]
+    gesture_buttons: GestureButtonsField,
+    /// Legacy sole-owner scalar (pre-v4 / dual-field fold). Absent or invalid
+    /// → infer; present `"Off"` / ButtonId → FoldOwner path.
     #[serde(default, deserialize_with = "deserialize_gesture_owner")]
     gesture_owner: Option<GestureOwner>,
     #[serde(default)]
@@ -196,8 +197,17 @@ impl From<RawDeviceConfig> for DeviceConfig {
             bindings.entry(button).or_insert(Binding::Single(action));
         }
 
+        // Stamp the multi-set from ExplicitButtons / FoldOwner / Infer so the
+        // next save is ExplicitButtons (self-heal). `gesture_owner` is not
+        // retained on the public struct — sole-owner callers use the K14 shim.
+        let gesture_buttons = Some(migrate_live_set(
+            &raw.gesture_buttons,
+            raw.gesture_owner,
+            &mut bindings,
+        ));
+
         DeviceConfig {
-            gesture_owner: raw.gesture_owner,
+            gesture_buttons,
             identity: raw.identity,
             bindings,
             per_app_bindings: raw.per_app_bindings,
