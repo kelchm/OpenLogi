@@ -28,9 +28,9 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, h_flex, popover::PopoverState, v_flex};
 
-use crate::data::mouse_buttons::{
-    Action, ButtonId, Category, GestureDirection, default_gesture_binding,
-};
+use openlogi_core::config::GesturePreset;
+
+use crate::data::mouse_buttons::{Action, ButtonId, Category, GestureDirection};
 use crate::mouse_model::view::MouseModelView;
 use crate::state::AppState;
 use crate::theme::{self, ACCENT_BLUE, Palette, SelectableStyle};
@@ -98,12 +98,67 @@ pub fn gesture_overview(
 ) -> AnyElement {
     let pal = theme::palette(cx);
     let active = view.read(cx).gesture_selected_dir();
-    h_flex()
-        .items_start()
+    let preset = cx
+        .try_global::<AppState>()
+        .map_or(GesturePreset::Custom, AppState::current_gesture_preset);
+    v_flex()
         .gap_2()
-        .child(plus_card(view, active, pal, cx))
-        // The flyout card only appears once a direction is activated.
-        .when_some(active, |row, dir| row.child(flyout_card(dir, view, pal, cx)))
+        .child(preset_row(view, preset, pal))
+        .child(
+            h_flex()
+                .items_start()
+                .gap_2()
+                .child(plus_card(view, active, pal, cx))
+                // The flyout card only appears once a direction is activated.
+                .when_some(active, |row, dir| row.child(flyout_card(dir, view, pal, cx))),
+        )
+        .into_any_element()
+}
+
+/// Preset dropdown: Window navigation · Media controls · Custom (K5).
+fn preset_row(
+    view: &Entity<MouseModelView>,
+    current: GesturePreset,
+    pal: Palette,
+) -> AnyElement {
+    menu_card(pal)
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(pal.text_muted)
+                .child(tr!("Choose a preset or select custom to create your own.")),
+        )
+        .child(
+            h_flex()
+                .gap_1()
+                .children(GesturePreset::ALL.into_iter().map(|preset| {
+                    let selected = preset == current;
+                    let view = view.clone();
+                    div()
+                        .id(("gesture-preset", preset as usize))
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .selected_border(selected, pal)
+                        .selected_fill(selected)
+                        .text_xs()
+                        .text_color(if selected {
+                            pal.text_primary
+                        } else {
+                            pal.text_muted
+                        })
+                        .when(!selected, |s| s.hover(|s| s.bg(pal.surface_hover)))
+                        .cursor_pointer()
+                        .child(tr!(preset.label()))
+                        .on_click(move |_event, _window, cx| {
+                            cx.update_global::<AppState, _>(|state, _| {
+                                state.commit_gesture_preset(preset);
+                            });
+                            view.update(cx, |_, vcx| vcx.notify());
+                        })
+                })),
+        )
         .into_any_element()
 }
 
@@ -135,19 +190,21 @@ fn plus_card(
     pal: Palette,
     cx: &mut Context<PopoverState>,
 ) -> AnyElement {
-    let actions: BTreeMap<GestureDirection, Action> = GestureDirection::ALL
+    // Sparse honesty (K15): only show a bound action when the key is stored.
+    // Missing keys show "Not set" — do not paint unstored defaults.
+    let actions: BTreeMap<GestureDirection, Option<Action>> = GestureDirection::ALL
         .into_iter()
         .map(|d| {
             let action = cx
                 .try_global::<AppState>()
-                .and_then(|s| s.gesture_bindings.get(&d).cloned())
-                .unwrap_or_else(|| default_gesture_binding(d));
+                .and_then(|s| s.gesture_bindings.get(&d).cloned());
             (d, action)
         })
         .collect();
 
-    let cell =
-        |dir: GestureDirection| direction_cell(dir, &actions[&dir], active == Some(dir), view, pal);
+    let cell = |dir: GestureDirection| {
+        direction_cell(dir, actions[&dir].as_ref(), active == Some(dir), view, pal)
+    };
 
     menu_card(pal)
         .gap_1p5()
@@ -180,7 +237,7 @@ fn plus_card(
 /// accented (border + faint fill); a default binding's action is muted.
 fn direction_cell(
     dir: GestureDirection,
-    current: &Action,
+    current: Option<&Action>,
     active: bool,
     view: &Entity<MouseModelView>,
     pal: Palette,
@@ -193,8 +250,11 @@ fn direction_cell(
         GestureDirection::Click => 4,
     };
     let header = format!("{}  {}", dir.glyph(), tr!(dir.label()));
-    let action_label = tr!(current.label());
-    let is_default = *current == default_gesture_binding(dir);
+    let (action_label, muted) = match current {
+        Some(Action::None) => (tr!("Do Nothing"), true),
+        Some(action) => (tr!(action.label()), false),
+        None => (tr!("Not set"), true),
+    };
     let view = view.clone();
     v_flex()
         .id(("gesture-cell", idx))
@@ -210,7 +270,7 @@ fn direction_cell(
         .child(
             div()
                 .text_sm()
-                .text_color(if is_default {
+                .text_color(if muted {
                     pal.text_muted
                 } else {
                     pal.text_primary
@@ -242,8 +302,7 @@ fn flyout_card(
 ) -> AnyElement {
     let current = cx
         .try_global::<AppState>()
-        .and_then(|s| s.gesture_bindings.get(&dir).cloned())
-        .unwrap_or_else(|| default_gesture_binding(dir));
+        .and_then(|s| s.gesture_bindings.get(&dir).cloned());
 
     let view_pick = view.clone();
     let on_pick: PickFn = Rc::new(move |action, _window, cx| {
@@ -258,7 +317,7 @@ fn flyout_card(
         .child(divider(pal))
         .child(scroll_list(
             "gesture-dir-scroll",
-            action_rows("gesture-action", Some(&current), &on_pick, pal),
+            action_rows("gesture-action", current.as_ref(), &on_pick, pal),
         ))
         .into_any_element()
 }

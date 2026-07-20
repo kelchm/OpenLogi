@@ -13,7 +13,7 @@
 )]
 
 pub use openlogi_core::binding::{
-    Action, Binding, ButtonId, Category, GestureDirection, default_binding, default_gesture_binding,
+    Action, Binding, ButtonId, Category, GestureDirection, default_binding,
 };
 
 /// The size of the mouse model canvas. Hotspot coords are relative to this.
