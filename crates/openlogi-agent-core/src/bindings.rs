@@ -77,24 +77,40 @@ pub fn gesture_bindings_for(
     bindings
 }
 
-/// Per-direction maps for the OS-hook gesture buttons (Middle/Back/Forward in
-/// gesture mode) on `config_key`, with `app_bundle`'s per-app overlay applied,
-/// for the OS hook to resolve a hold+swipe.
+/// Per-button direction maps for live HID++ gesture controls
+/// ([`ButtonId::GestureButton`] and/or [`ButtonId::DpiToggle`]).
 ///
-/// Unlike [`gesture_bindings_for`] (the dedicated HID++ gesture button, which
-/// seeds every direction from [`default_gesture_binding`] at projection time),
-/// this returns the owner's raw stored map. In practice that map is already
-/// fully populated — [`Config::set_gesture_owner`] seeds all five directions via
-/// [`Binding::fill_gesture_defaults`] when a button is promoted — so only a
-/// hand-edited sparse map leaves a direction unbound, in which case that swipe
-/// simply does nothing. The dedicated gesture button is intentionally excluded:
-/// it never reaches the OS hook (it's captured over HID++), so it has no entry
-/// here.
+/// Built from [`Config::resolve_gesture_button`]: a button is included only when
+/// it is in the live multi-set **and** stores a [`Binding::Gesture`] map. The
+/// stored map is used as-is (sparse keys are no-ops at runtime) — projection
+/// does not invent desktop defaults into DPI maps.
+#[must_use]
+pub fn hidpp_gestures_for(
+    config: &Config,
+    config_key: Option<&str>,
+) -> BTreeMap<ButtonId, BTreeMap<GestureDirection, Action>> {
+    use openlogi_core::config::GestureButtonState;
+
+    let Some(key) = config_key else {
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for button in [ButtonId::GestureButton, ButtonId::DpiToggle] {
+        if let GestureButtonState::LiveMap { map } = config.resolve_gesture_button(key, button) {
+            out.insert(button, map);
+        }
+    }
+    out
+}
+
+/// Per-direction maps for live OS-hook gesture buttons (Middle/Back/Forward)
+/// on `config_key`, with `app_bundle`'s per-app overlay applied.
 ///
-/// A per-app override of the owner button turns it into a [`Binding::Single`]
-/// for that app, so it stops being a gesture button there and falls through to
-/// the single-action path (which applies the override) — mirroring how a single
-/// binding is overridden per app.
+/// Includes every OS-hook id that is in the live multi-set and still a
+/// [`Binding::Gesture`] after `effective_bindings` (a per-app Single demotes
+/// that button for the foreground app only). Maps are stored-as-is (sparse =
+/// no-op). Multi-hold among OS-hook buttons is optional PR2; PR1 still projects
+/// multiple maps when migration produced them.
 #[must_use]
 pub fn oshook_gestures_for(
     config: &Config,
@@ -104,23 +120,22 @@ pub fn oshook_gestures_for(
     let Some(key) = config_key else {
         return BTreeMap::new();
     };
-    // Only an OS-hook button (Middle/Back/Forward) as the device's gesture owner
-    // feeds the OS hook: the dedicated HID++ gesture button is captured over HID++, and a non-owner
-    // button is dispatched as its single click action. Returning *only* the owner
-    // keeps the runtime in lockstep with `gesture_owner` and the GUI, so a stray
-    // second gesture map (e.g. a hand-edited config) can't make two buttons fire.
-    let Some(owner) = config
-        .gesture_owner(key)
-        .filter(|id| id.is_os_hook_button())
-    else {
-        return BTreeMap::new();
-    };
-    // Read the per-app *effective* map: a per-app override replaces the owner with
-    // a `Single`, dropping it from the gesture set for that app.
-    match config.effective_bindings(key, app_bundle).remove(&owner) {
-        Some(Binding::Gesture(map)) => BTreeMap::from([(owner, map)]),
-        _ => BTreeMap::new(),
+    let live = config.gesture_buttons(key);
+    let effective = config.effective_bindings(key, app_bundle);
+    let mut out = BTreeMap::new();
+    for id in [
+        ButtonId::MiddleClick,
+        ButtonId::Back,
+        ButtonId::Forward,
+    ] {
+        if !live.contains(id) {
+            continue;
+        }
+        if let Some(Binding::Gesture(map)) = effective.get(&id) {
+            out.insert(id, map.clone());
+        }
     }
+    out
 }
 
 #[cfg(test)]
@@ -240,5 +255,93 @@ mod tests {
             gesture_bindings_for(&cfg, Some("2b042")).is_empty(),
             "HID++ gesture button must dispatch nothing once another button owns gestures"
         );
+    }
+
+    #[test]
+    fn hidpp_gestures_includes_dpi_map_alongside_primary_owner() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("2b042", ButtonId::GestureButton);
+        cfg.enable_gesture_button("2b042", ButtonId::DpiToggle);
+        cfg.set_gesture_preset(
+            "2b042",
+            ButtonId::DpiToggle,
+            openlogi_core::config::GesturePreset::MediaControls,
+        );
+
+        let maps = hidpp_gestures_for(&cfg, Some("2b042"));
+        assert!(
+            maps.contains_key(&ButtonId::GestureButton),
+            "primary gesture button stays live"
+        );
+        assert_eq!(
+            maps.get(&ButtonId::DpiToggle)
+                .and_then(|m| m.get(&GestureDirection::Up)),
+            Some(&Action::VolumeUp),
+            "DPI gesture map is an independent second source"
+        );
+    }
+
+    #[test]
+    fn hidpp_gestures_omits_dpi_when_it_is_a_single_action() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("2b042", ButtonId::GestureButton);
+        cfg.set_binding(
+            "2b042",
+            ButtonId::DpiToggle,
+            Action::CycleDpiPresets.into(),
+        );
+
+        let maps = hidpp_gestures_for(&cfg, Some("2b042"));
+        assert!(maps.contains_key(&ButtonId::GestureButton));
+        assert!(
+            !maps.contains_key(&ButtonId::DpiToggle),
+            "a single-action DPI button is not a gesture source"
+        );
+    }
+
+    #[test]
+    fn hidpp_gestures_omits_preserved_not_live_dpi_map() {
+        let mut cfg = Config::default();
+        cfg.enable_gesture_button("2b042", ButtonId::GestureButton);
+        cfg.enable_gesture_button("2b042", ButtonId::DpiToggle);
+        cfg.set_gesture_preset(
+            "2b042",
+            ButtonId::DpiToggle,
+            openlogi_core::config::GesturePreset::MediaControls,
+        );
+        cfg.disable_gesture_button("2b042", ButtonId::DpiToggle);
+
+        let maps = hidpp_gestures_for(&cfg, Some("2b042"));
+        assert!(maps.contains_key(&ButtonId::GestureButton));
+        assert!(
+            !maps.contains_key(&ButtonId::DpiToggle),
+            "demoted DPI must not arm even though its map is preserved"
+        );
+    }
+
+    #[test]
+    fn oshook_gestures_uses_live_set_not_sole_owner_only() {
+        let mut cfg = Config::default();
+        // Explicit multi: Back live (via enable) with GB also live.
+        cfg.enable_gesture_button("2b042", ButtonId::GestureButton);
+        cfg.enable_gesture_button("2b042", ButtonId::Back);
+        let oshook = oshook_gestures_for(&cfg, Some("2b042"), None);
+        assert!(oshook.contains_key(&ButtonId::Back));
+        assert!(!oshook.contains_key(&ButtonId::GestureButton));
+    }
+
+    #[test]
+    fn hidpp_gestures_defaults_for_unconfigured_device() {
+        // No device stanza: live defaults to {GestureButton} with main pack so a
+        // fresh/headless agent still arms the dedicated pad.
+        let cfg = Config::default();
+        let maps = hidpp_gestures_for(&cfg, Some("never-seen"));
+        assert!(maps.contains_key(&ButtonId::GestureButton));
+        assert_eq!(
+            maps.get(&ButtonId::GestureButton)
+                .and_then(|m| m.get(&GestureDirection::Up)),
+            Some(&default_gesture_binding(GestureDirection::Up))
+        );
+        assert!(!maps.contains_key(&ButtonId::DpiToggle));
     }
 }

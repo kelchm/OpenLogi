@@ -381,6 +381,12 @@ impl Config {
             (true, Some(Binding::Single(action))) => GestureButtonState::LiveButSingle {
                 action: action.clone(),
             },
+            // Vacant live Gesture Button (no device stanza / not yet stamped):
+            // project the main default five-pack so a fresh device still arms and
+            // dispatches OpenLogi defaults until enable/load materializes storage.
+            (true, None) if button == ButtonId::GestureButton => GestureButtonState::LiveMap {
+                map: main_default_gesture_map(),
+            },
             (true, None) => GestureButtonState::LiveButSingle {
                 action: Action::None,
             },

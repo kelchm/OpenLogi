@@ -20,7 +20,7 @@ use openlogi_hid::{CaptureChannel, DeviceRoute};
 use tracing::warn;
 
 use crate::DpiCycleState;
-use crate::bindings::{bindings_for, gesture_bindings_for, oshook_gestures_for};
+use crate::bindings::{bindings_for, hidpp_gestures_for, oshook_gestures_for};
 use crate::device_order::DeviceStableId;
 use crate::hook_runtime::{HookMaps, SharedHookMaps};
 use crate::ipc::InventoryHealth;
@@ -166,7 +166,7 @@ impl Orchestrator {
         );
         write_value(
             &self.shared.gesture_bindings,
-            gesture_bindings_for(&self.config, key),
+            hidpp_gestures_for(&self.config, key),
             "gesture_bindings",
         );
         write_value(

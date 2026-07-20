@@ -18,7 +18,7 @@
 //! the events arrive over HID++, and the bound action is synthesised the same
 //! way regardless.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -34,9 +34,10 @@ use crate::DpiCycleState;
 use crate::hook_runtime::{self, SharedHookMaps};
 use crate::receiver_access::ReceiverAccess;
 
-/// Shared gesture-direction binding map, mirrored from `AppState` (keyed by
-/// direction). The watcher reads it to map a captured swipe to a bound action.
-pub type GestureBindings = Arc<RwLock<BTreeMap<GestureDirection, Action>>>;
+/// Shared HID++ gesture maps, mirrored from the orchestrator: per-button
+/// direction maps for the dedicated gesture button and (optionally) the DPI
+/// button. The watcher reads these to map a captured swipe to a bound action.
+pub type GestureBindings = Arc<RwLock<BTreeMap<ButtonId, BTreeMap<GestureDirection, Action>>>>;
 
 /// Shared thumb-wheel sensitivity, mirrored from `AppState`. Read on every wheel
 /// event; written only by `AppState::set_thumbwheel_sensitivity`.
@@ -153,8 +154,8 @@ async fn manage(
     receiver_access: ReceiverAccess,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<CapturedInput>();
-    // (route, capture_thumbwheel, divert_gesture_button)
-    let mut current: Option<(DeviceRoute, bool, bool)> = None;
+    // (route, capture_thumbwheel, hidpp_gesture_buttons)
+    let mut current: Option<(DeviceRoute, bool, BTreeSet<ButtonId>)> = None;
     let mut stop: Option<oneshot::Sender<()>> = None;
     let mut ticker = tokio::time::interval(TARGET_POLL);
     let mut accumulators = WheelAccumulators::default();
@@ -191,24 +192,26 @@ async fn manage(
                 } else {
                     let target = dpi_cycle.read().ok().and_then(|guard| guard.target.clone());
                     let sensitivity = thumbwheel_sensitivity.load(Ordering::Relaxed);
-                    // Divert the dedicated HID++ gesture button only while it owns the gesture role. The
-                    // shared gesture map is non-empty exactly then (gesture_bindings_for
-                    // gates on the owner), so it doubles as that signal — no need to
-                    // thread the full config in. Re-evaluated each tick, so a
-                    // ReloadConfig owner change restarts the session accordingly.
-                    let divert_gesture = gesture_bindings.read().is_ok_and(|g| !g.is_empty());
+                    // HID++ gesture arm set is derived from the shared per-button
+                    // maps (hidpp_gestures_for). Re-evaluated each tick so a
+                    // ReloadConfig restarts the session accordingly.
+                    let hidpp_gesture_buttons = gesture_bindings
+                        .read()
+                        .ok()
+                        .map(|g| g.keys().copied().collect::<BTreeSet<_>>())
+                        .unwrap_or_default();
                     target.map(|t| {
                         (
                             t,
                             thumbwheel_armed(&hook_maps, sensitivity),
-                            divert_gesture,
+                            hidpp_gesture_buttons,
                         )
                     })
                 };
                 if want == current {
                     continue;
                 }
-                // Target or thumb-wheel arming changed (or first tick): stop the
+                // Target or arming set changed (or first tick): stop the
                 // old session and start one for the new state. Sending on the
                 // oneshot lets the old session restore the diverted controls.
                 if let Some(stop) = stop.take() {
@@ -218,12 +221,16 @@ async fn manage(
                     current = None;
                     continue;
                 }
-                if let Some((route, capture_thumbwheel, divert_gesture_button)) = want {
+                if let Some((route, capture_thumbwheel, hidpp_gesture_buttons)) = want {
                     let Some(receiver_lease) = receiver_access.try_acquire_for_capture() else {
                         current = None;
                         continue;
                     };
-                    current = Some((route.clone(), capture_thumbwheel, divert_gesture_button));
+                    current = Some((
+                        route.clone(),
+                        capture_thumbwheel,
+                        hidpp_gesture_buttons.clone(),
+                    ));
                     let (stop_tx, stop_rx) = oneshot::channel();
                     let sink = tx.clone();
                     let slot = Arc::clone(&capture_channel);
@@ -235,7 +242,7 @@ async fn manage(
                         if let Err(e) = run_capture_session(
                             route,
                             capture_thumbwheel,
-                            divert_gesture_button,
+                            hidpp_gesture_buttons,
                             sink,
                             stop_rx,
                             slot,
@@ -318,16 +325,17 @@ fn dispatch(
     thumbwheel_sensitivity: &ThumbwheelSensitivity,
 ) {
     match input {
-        CapturedInput::Gesture(direction) => {
-            let action = gesture_bindings
-                .read()
-                .ok()
-                .and_then(|guard| guard.get(&direction).cloned());
+        CapturedInput::Gesture { button, direction } => {
+            let action = gesture_bindings.read().ok().and_then(|guard| {
+                guard
+                    .get(&button)
+                    .and_then(|dirs| dirs.get(&direction).cloned())
+            });
             if let Some(action) = action {
-                debug!(?direction, action = %action.label(), "gesture → action");
+                debug!(?button, ?direction, action = %action.label(), "gesture → action");
                 hook_runtime::dispatch_action(&action, dpi_cycle, capture);
             } else {
-                debug!(?direction, "gesture with no binding — ignored");
+                debug!(?button, ?direction, "gesture with no binding — ignored");
             }
         }
         CapturedInput::ButtonPressed(button) => {
