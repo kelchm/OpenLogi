@@ -2133,4 +2133,47 @@ Click = "PlayPause"
             other => panic!("expected upgraded gesture map, got {other:?}"),
         }
     }
+
+    #[test]
+    fn identity_only_v3_does_not_invent_dpi_gesture() {
+        // Realistic existing-user shape: schema 3, device identity only, no
+        // gesture_owner and no bindings. Migration must not invent a DPI
+        // gesture map or put DpiToggle in the live set (K5a / K6a).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+schema_version = 3
+[devices."receiver:c0ea968a:slot:1".identity]
+display_name = "MX Master 3"
+kind = "mouse"
+[devices."receiver:c0ea968a:slot:1".identity.capabilities]
+buttons = true
+pointer = true
+lighting = false
+scroll_inversion = true
+hires_wheel = true
+"#,
+        )
+        .expect("write");
+        let cfg = Config::load_from_path(&path).expect("load");
+        let key = "receiver:c0ea968a:slot:1";
+        let live = cfg.gesture_buttons(key);
+        assert!(
+            live.contains(ButtonId::GestureButton) && live.len() == 1,
+            "default owner only: {live}"
+        );
+        assert!(
+            !live.contains(ButtonId::DpiToggle),
+            "must not invent DPI live: {live}"
+        );
+        assert!(
+            !matches!(
+                cfg.bindings_for(key).get(&ButtonId::DpiToggle),
+                Some(Binding::Gesture(_))
+            ),
+            "must not invent a DPI gesture map"
+        );
+    }
 }
