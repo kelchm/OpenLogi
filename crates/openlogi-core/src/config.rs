@@ -2176,4 +2176,50 @@ hires_wheel = true
             "must not invent a DPI gesture map"
         );
     }
+
+    #[test]
+    fn fold_owner_gb_with_dpi_single_does_not_promote_dpi() {
+        // K6a complement: dual only when DpiToggle is already Gesture.
+        // FoldOwner=GB + DPI as Single → live keeps GB (and OS-hook maps if
+        // any); DpiToggle must not enter the live set and its Single binding
+        // must not be rewritten to Gesture.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"
+schema_version = 3
+[devices.mx]
+gesture_owner = "GestureButton"
+[devices.mx.bindings]
+DpiToggle = "CycleDpiPresets"
+[devices.mx.bindings.MiddleClick]
+Up = "MissionControl"
+Click = "MiddleClick"
+[devices.mx.bindings.GestureButton]
+Up = "MissionControl"
+Down = "ShowDesktop"
+Left = "PrevTab"
+Right = "NextTab"
+Click = "AppExpose"
+"#,
+        )
+        .expect("write");
+        let cfg = Config::load_from_path(&path).expect("load");
+        let live = cfg.gesture_buttons("mx");
+        assert!(live.contains(ButtonId::GestureButton), "{live}");
+        assert!(
+            live.contains(ButtonId::MiddleClick),
+            "OS-hook multi-union keeps Middle: {live}"
+        );
+        assert!(
+            !live.contains(ButtonId::DpiToggle),
+            "DPI Single must not become live gesture: {live}"
+        );
+        assert_eq!(
+            cfg.bindings_for("mx").get(&ButtonId::DpiToggle),
+            Some(&Binding::Single(Action::CycleDpiPresets)),
+            "DPI Single binding must be left unchanged"
+        );
+    }
 }
