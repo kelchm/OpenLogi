@@ -91,9 +91,9 @@ pub struct AppState {
     /// carousel selection changes.
     pub button_bindings: BTreeMap<ButtonId, Action>,
     /// Per-direction sub-bindings for the button currently open in the gesture
-    /// editor ([`Self::gesture_edit_button`]). Global-config only (K16) — not a
+    /// editor ([`Self::gesture_edit_button`]). Global-config only — not a
     /// live mirror of app-scoped agent projection. Sparse keys are unbound
-    /// (K15); the picker must not paint unstored defaults as bound.
+    /// ; the picker must not paint unstored defaults as bound.
     ///
     /// [`DeviceConfig::bindings`]: openlogi_core::config::DeviceConfig::bindings
     pub gesture_bindings: BTreeMap<GestureDirection, Action>,
@@ -1165,8 +1165,8 @@ impl AppState {
         let Some(button) = button else {
             return BTreeMap::new();
         };
-        // Stored map only (global config, K16). Sparse honesty: no seed of
-        // unstored defaults into the editor (K15).
+        // Stored map only. Sparse honesty: no seed of
+        // unstored defaults into the editor.
         match self.config.resolve_gesture_button(key, button) {
             GestureButtonState::LiveMap { map }
             | GestureButtonState::NotLive {
@@ -1245,7 +1245,7 @@ impl AppState {
         self.persist_and_reload("gesture-button change");
     }
 
-    /// Apply a named preset or Custom tag for the open editor button (K5).
+    /// Apply a named preset or Custom tag for the open editor button.
     pub fn commit_gesture_preset(&mut self, preset: GesturePreset) {
         let Some(key) = self.current_record().map(|r| r.config_key.clone()) else {
             return;

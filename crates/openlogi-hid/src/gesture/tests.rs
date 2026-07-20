@@ -208,7 +208,7 @@ fn both_gesture_sources_can_commit_from_the_same_raw_xy_stream() {
     assert!(rx.try_recv().is_err());
 }
 
-// ── Transactional arm bookkeeping (K8a) ────────────────────────────────────
+// ── Transactional arm bookkeeping ────────────────────────────────────
 
 #[derive(Default)]
 struct MockDivert {

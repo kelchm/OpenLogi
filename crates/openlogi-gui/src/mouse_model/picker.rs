@@ -115,7 +115,7 @@ pub fn gesture_overview(
         .into_any_element()
 }
 
-/// Preset dropdown: Window navigation · Media controls · Custom (K5).
+/// Preset dropdown: Window navigation · Media controls · Custom.
 fn preset_row(
     view: &Entity<MouseModelView>,
     current: GesturePreset,
@@ -190,7 +190,7 @@ fn plus_card(
     pal: Palette,
     cx: &mut Context<PopoverState>,
 ) -> AnyElement {
-    // Sparse honesty (K15): only show a bound action when the key is stored.
+    // Sparse honesty: only show a bound action when the key is stored.
     // Missing keys show "Not set" — do not paint unstored defaults.
     let actions: BTreeMap<GestureDirection, Option<Action>> = GestureDirection::ALL
         .into_iter()

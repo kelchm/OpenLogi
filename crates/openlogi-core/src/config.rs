@@ -264,7 +264,7 @@ impl Config {
     /// [`Self::set_gesture_direction`] to edit one direction of a gesture
     /// binding in place).
     ///
-    /// A non-gesture binding destroys the preset tag (K13) and drops the button
+    /// A non-gesture binding destroys the preset tag and drops the button
     /// from the live multi-set when present (non-destructive maps are only kept
     /// for demoted `Binding::Gesture` entries).
     pub fn set_binding(&mut self, device_key: &str, button: ButtonId, binding: Binding) {
@@ -314,7 +314,7 @@ impl Config {
         if let Binding::Gesture(map) = self.ensure_gesture_binding(device_key, button) {
             map.insert(direction, action);
         }
-        // Editing any direction while a named preset is selected → Custom (K5).
+        // Editing any direction while a named preset is selected → Custom.
         self.devices
             .entry(device_key.to_string())
             .or_default()
@@ -358,7 +358,7 @@ impl Config {
         }
     }
 
-    /// Canonical per-button gesture state for agent + GUI (K4).
+    /// Canonical per-button gesture state for agent + GUI.
     #[must_use]
     pub fn resolve_gesture_button(
         &self,
@@ -393,7 +393,7 @@ impl Config {
         }
     }
 
-    /// Add `button` to the live multi-set (K5b first-enable map rules).
+    /// Add `button` to the live multi-set.
     ///
     /// Ineligible ids are ignored. Already-live buttons keep their maps; an
     /// unstamped infer default is still stamped so the next save is Explicit.
@@ -418,7 +418,7 @@ impl Config {
                     .entry(id)
                     .or_insert(GesturePreset::Custom);
             } else {
-                // Newly materialised or upgraded from Single → Custom (K5b).
+                // Newly materialised or upgraded from Single → Custom.
                 // Must overwrite a stale named tag left after a Single rebind.
                 device.gesture_presets.insert(id, GesturePreset::Custom);
             }
@@ -437,7 +437,7 @@ impl Config {
 
     /// Replace the live multi-set with `buttons` (filtered to eligible). Empty → Off.
     ///
-    /// Each newly enabled button gets a K5b first-enable map; already-Gesture
+    /// Each newly enabled button gets a first-enable map; already-Gesture
     /// maps are kept. Buttons leaving the set keep their maps (non-destructive).
     pub fn set_gesture_buttons(
         &mut self,
@@ -461,7 +461,7 @@ impl Config {
         device.gesture_buttons = Some(desired);
     }
 
-    /// Preset tag for `button` on `device_key` (K5 / K5a).
+    /// Preset tag for `button` on `device_key`.
     ///
     /// Stored tag wins; otherwise derive from the Gesture map (exact table →
     /// named, else Custom). Non-gesture / absent → Custom.
@@ -485,7 +485,7 @@ impl Config {
         }
     }
 
-    /// Apply a preset selection (K5).
+    /// Apply a preset selection.
     ///
     /// * Named preset → replace the full five-map from the table and set the tag.
     /// * Custom → set the tag only (map is not wiped).
@@ -507,7 +507,7 @@ impl Config {
         device.gesture_presets.insert(button, preset);
     }
 
-    /// Compat sole-owner view of the multi-set (K14).
+    /// Compat sole-owner view of the multi-set.
     ///
     /// Preference: first live OS-hook (Middle, Back, Forward) → GestureButton →
     /// DpiToggle. Empty / Off → `None`. Absent device → default GestureButton.
@@ -535,7 +535,7 @@ impl Config {
         None
     }
 
-    /// Compat sole-owner setter (K14): when `button` is already the sole-owner
+    /// Compat sole-owner setter: when `button` is already the sole-owner
     /// shim result, membership is left unchanged (so a GUI re-click does not
     /// collapse a dual HID++ set) but the map is still ensured and the set is
     /// stamped. Otherwise replace the live set with the singleton `{button}`.
@@ -1551,7 +1551,7 @@ Back = \"BrowserBack\"
         assert_eq!(cfg.gesture_owner("2b042"), Some(ButtonId::Back));
 
         let bindings = cfg.bindings_for("2b042");
-        // Back: prior Single → Click, other dirs Action::None (K5b).
+        // Back: prior Single → Click, other dirs Action::None.
         match bindings.get(&ButtonId::Back) {
             Some(Binding::Gesture(map)) => {
                 assert_eq!(
@@ -1589,7 +1589,7 @@ Back = \"BrowserBack\"
     #[test]
     fn set_gesture_owner_seeds_a_fresh_button_with_full_directions() {
         let mut cfg = Config::default();
-        // The dedicated HID++ gesture button gets the main default five-pack (K5b).
+        // The dedicated HID++ gesture button gets the main default five-pack.
         cfg.set_gesture_owner("2b042", ButtonId::GestureButton);
         match cfg.bindings_for("2b042").get(&ButtonId::GestureButton) {
             Some(Binding::Gesture(map)) => {
@@ -1600,7 +1600,7 @@ Back = \"BrowserBack\"
             other => panic!("expected full default gesture map, got {other:?}"),
         }
 
-        // A vacant OS-hook button gets all five dirs as Action::None (K5b) — not
+        // A vacant OS-hook button gets all five dirs as Action::None — not
         // the desktop defaults (those are Gesture Button / Window navigation only).
         cfg.set_gesture_owner("2b042", ButtonId::Forward);
         match cfg.bindings_for("2b042").get(&ButtonId::Forward) {
@@ -1865,7 +1865,7 @@ gesture_buttons = "not-a-button"
         assert!(live.contains(ButtonId::GestureButton));
         assert!(live.contains(ButtonId::DpiToggle));
 
-        // Compat sole-owner is GestureButton; re-set must not collapse dual (K14).
+        // Compat sole-owner is GestureButton; re-set must not collapse dual.
         assert_eq!(cfg.gesture_owner("2b042"), Some(ButtonId::GestureButton));
         cfg.set_gesture_owner("2b042", ButtonId::GestureButton);
         let live = cfg.gesture_buttons("2b042");
@@ -1908,7 +1908,7 @@ gesture_buttons = "not-a-button"
 
     #[test]
     fn main_default_map_is_custom_not_window_navigation() {
-        // K5a fact: main pack ≠ Window navigation 1:1.
+        // Main pack ≠ Window navigation 1:1.
         assert_ne!(
             main_default_gesture_map(),
             window_navigation_map(),
@@ -2104,7 +2104,7 @@ Click = "PlayPause"
             GesturePreset::MediaControls
         );
 
-        // Single rebind destroys map + preset and drops from live set (K13).
+        // Single rebind destroys map + preset and drops from live set.
         cfg.set_binding(
             "d",
             ButtonId::DpiToggle,
@@ -2138,7 +2138,7 @@ Click = "PlayPause"
     fn identity_only_v3_does_not_invent_dpi_gesture() {
         // Realistic existing-user shape: schema 3, device identity only, no
         // gesture_owner and no bindings. Migration must not invent a DPI
-        // gesture map or put DpiToggle in the live set (K5a / K6a).
+        // gesture map or put DpiToggle in the live set.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         fs::write(
@@ -2179,10 +2179,10 @@ hires_wheel = true
 
     #[test]
     fn fold_owner_gb_with_dpi_single_does_not_promote_dpi() {
-        // K6a complement: dual only when DpiToggle is already Gesture.
-        // FoldOwner=GB + DPI as Single → live keeps GB (and OS-hook maps if
-        // any); DpiToggle must not enter the live set and its Single binding
-        // must not be rewritten to Gesture.
+        // When the folded owner is GestureButton but DpiToggle is still a
+        // Single binding, DPI must not enter the live set and its binding
+        // must not be rewritten to Gesture (dual-promote only applies when
+        // DpiToggle is already a Gesture map).
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         fs::write(

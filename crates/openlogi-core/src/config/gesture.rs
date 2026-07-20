@@ -258,7 +258,7 @@ where
     ))
 }
 
-/// Resolved state of one button for agent + GUI (canonical, K4).
+/// Resolved state of one button for agent + GUI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GestureButtonState {
     /// Not in the live set; may still store a preserved Gesture map.
@@ -338,7 +338,7 @@ pub(super) fn normalize_live_set(
     out
 }
 
-/// Pure migrate algorithm (K6b + K6a). Evaluates ExplicitButtons / FoldOwner / Infer.
+/// Pure migrate algorithm. Evaluates ExplicitButtons / FoldOwner / Infer.
 pub(super) fn migrate_live_set(
     source: &GestureButtonsField,
     gesture_owner: Option<GestureOwner>,
@@ -346,7 +346,7 @@ pub(super) fn migrate_live_set(
 ) -> GestureButtons {
     match source {
         GestureButtonsField::Present(present) => {
-            // ExplicitButtons: trust the file; no K6a promote; demotion sticky.
+            // ExplicitButtons: trust the file; no promote; demotion sticky.
             normalize_live_set(present, bindings)
         }
         GestureButtonsField::Absent => match gesture_owner {
@@ -354,7 +354,8 @@ pub(super) fn migrate_live_set(
             Some(GestureOwner::Button(id)) if is_gesture_eligible(id) => {
                 let mut base = GestureButtons::try_from_iter([id]);
                 base = multi_union_oshook(base, bindings);
-                // K6a: dual only when the *folded owner* is GestureButton.
+                // Dual-promote DPI only when the folded owner is GestureButton
+                // and DpiToggle already has a Gesture map.
                 if id == ButtonId::GestureButton && is_gesture_map(bindings, ButtonId::DpiToggle) {
                     base = base.insert(ButtonId::DpiToggle);
                 }
@@ -365,7 +366,7 @@ pub(super) fn migrate_live_set(
                 GestureButtons::off()
             }
             None => {
-                // Infer: master sole seed → multi OS-hook union → K6a dual.
+                // Infer: master sole seed → multi OS-hook union → dual.
                 let mut base = match master_infer_owner(bindings) {
                     None => GestureButtons::off(),
                     Some(id) => GestureButtons::try_from_iter([id]),
@@ -382,7 +383,7 @@ pub(super) fn migrate_live_set(
     }
 }
 
-/// First-enable map for a vacant or Single-bound button (K5b, without preset tags).
+/// First-enable map for a vacant or Single-bound button.
 ///
 /// * Gesture Button vacant → main `default_gesture_binding` five-pack.
 /// * Other vacant → full five keys of [`Action::None`].
@@ -431,7 +432,7 @@ pub fn main_default_gesture_map() -> BTreeMap<GestureDirection, Action> {
         .collect()
 }
 
-/// Named gesture direction pack, or free-form Custom (K5).
+/// Named gesture direction pack, or free-form Custom.
 ///
 /// The five-direction map is always the dispatch source of truth. A named
 /// preset tag means the stored map exactly matches that preset's table (or was
@@ -473,7 +474,7 @@ impl fmt::Display for GesturePreset {
     }
 }
 
-/// Window navigation preset table (K5).
+/// Window navigation preset table.
 #[must_use]
 pub fn window_navigation_map() -> BTreeMap<GestureDirection, Action> {
     BTreeMap::from([
@@ -485,7 +486,7 @@ pub fn window_navigation_map() -> BTreeMap<GestureDirection, Action> {
     ])
 }
 
-/// Media controls preset table (K5).
+/// Media controls preset table.
 #[must_use]
 pub fn media_controls_map() -> BTreeMap<GestureDirection, Action> {
     BTreeMap::from([
@@ -507,7 +508,7 @@ pub fn preset_table(preset: GesturePreset) -> Option<BTreeMap<GestureDirection, 
     }
 }
 
-/// Exact table match → named preset; otherwise [`GesturePreset::Custom`] (K5a).
+/// Exact table match → named preset; otherwise [`GesturePreset::Custom`].
 ///
 /// Never rewrites the map — callers only use this to tag.
 #[must_use]
@@ -521,7 +522,7 @@ pub fn match_gesture_preset(map: &BTreeMap<GestureDirection, Action>) -> Gesture
     }
 }
 
-/// Derive missing preset tags from stored Gesture maps without rewriting maps (K5a).
+/// Derive missing preset tags from stored Gesture maps without rewriting maps.
 ///
 /// For every `Binding::Gesture` entry that lacks a tag, insert the match result.
 /// Existing tags are left untouched (including a Custom tag over an exact table).
@@ -668,7 +669,7 @@ mod tests {
         assert!(live.contains(ButtonId::GestureButton));
         assert!(
             !live.contains(ButtonId::DpiToggle),
-            "ExplicitButtons must not K6a-promote"
+            "ExplicitButtons must not dual-promote DPI"
         );
     }
 

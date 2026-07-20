@@ -96,7 +96,7 @@ struct CaptureAccum {
 /// (typically [`ButtonId::GestureButton`] and/or [`ButtonId::DpiToggle`]). Other
 /// members are ignored. DPI is always diverted when present so its plain press
 /// can be rebound; when it is also in the gesture set it is diverted with
-/// raw-XY. Arming is **transactional** (K8a): any mid-arm failure restores
+/// raw-XY. Arming is **transactional**: any mid-arm failure restores
 /// every control that was already diverted.
 ///
 /// Opens and holds one HID++ channel, diverts whichever of those controls the
@@ -191,7 +191,7 @@ struct ArmedDivert {
     raw_xy: bool,
 }
 
-/// Pure bookkeeping for transactional HID++ divert (K8a). Extracted so rollback
+/// Pure bookkeeping for transactional HID++ divert. Extracted so rollback
 /// order can be unit-tested without a real device.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ArmProgress {
@@ -282,7 +282,7 @@ impl ArmedControls {
 }
 
 /// Resolve features off the device's root and divert the controls we capture.
-/// Arming of reprog CIDs is transactional (K8a).
+/// Arming of reprog CIDs is transactional.
 async fn arm_controls(
     chan: &Arc<HidppChannel>,
     slot: u8,

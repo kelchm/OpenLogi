@@ -67,7 +67,7 @@ pub struct DeviceConfig {
     pub gesture_buttons: Option<GestureButtons>,
     /// Per-button gesture preset tag (Window navigation / Media / Custom).
     /// Absent on load is derived from the map (exact table match → named,
-    /// else Custom) without rewriting actions (K5a).
+    /// else Custom) without rewriting actions.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub gesture_presets: BTreeMap<ButtonId, GesturePreset>,
     /// Last-known identity (name / kind / capabilities), captured while the
@@ -207,14 +207,14 @@ impl From<RawDeviceConfig> for DeviceConfig {
 
         // Stamp the multi-set from ExplicitButtons / FoldOwner / Infer so the
         // next save is ExplicitButtons (self-heal). `gesture_owner` is not
-        // retained on the public struct — sole-owner callers use the K14 shim.
+        // retained on the public struct — sole-owner callers use the shim.
         let gesture_buttons = Some(migrate_live_set(
             &raw.gesture_buttons,
             raw.gesture_owner,
             &mut bindings,
         ));
 
-        // Derive missing preset tags from maps; never rewrite maps (K5a).
+        // Derive missing preset tags from maps; never rewrite maps.
         let mut gesture_presets = raw.gesture_presets;
         derive_missing_preset_tags(&bindings, &mut gesture_presets);
 
